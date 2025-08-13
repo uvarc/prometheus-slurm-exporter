@@ -25,7 +25,7 @@ import (
 )
 
 func FairShareData() []byte {
-        cmd := exec.Command( "sshare", "-n", "-P", "-o", "account,fairshare" )
+        cmd := exec.Command( "sshare", "-na", "-P", "-o", "account,fairshare" )
         stdout, err := cmd.StdoutPipe()
         if err != nil {
                 log.Fatal(err)
@@ -48,7 +48,7 @@ func ParseFairShareMetrics() map[string]*FairShareMetrics {
         accounts := make(map[string]*FairShareMetrics)
         lines := strings.Split(string(FairShareData()), "\n")
         for _, line := range lines {
-                if ! strings.HasPrefix(line,"  ") {
+                //if ! strings.HasPrefix(line,"  ") {
                         if strings.Contains(line,"|") {
                                 account := strings.Trim(strings.Split(line,"|")[0]," ")
                                 _,key := accounts[account]
@@ -56,9 +56,11 @@ func ParseFairShareMetrics() map[string]*FairShareMetrics {
                                         accounts[account] = &FairShareMetrics{0}
                                 }
                                 fairshare,_ := strconv.ParseFloat(strings.Split(line,"|")[1],64)
-                                accounts[account].fairshare = fairshare
+                                if fairshare > accounts[account].fairshare { 
+					accounts[account].fairshare = fairshare
+				}
                         }
-                }
+                //}
         }
         return accounts
 }
