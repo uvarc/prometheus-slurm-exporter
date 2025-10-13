@@ -80,6 +80,7 @@ type PartitionMetrics struct {
         idle float64
         other float64
         pending float64
+        pendingOverlap float64
         total float64
 	waitingUsers map[string]bool // To store unique users per partition
 	usersRunning float64
@@ -94,7 +95,7 @@ func ParsePartitionsMetrics() map[string]*PartitionMetrics {
                         partition := strings.Split(line,",")[0]
                         _,key := partitions[partition]
                         if !key {
-                                partitions[partition] = &PartitionMetrics{0,0,0,0,0, make(map[string]bool),0}
+                                partitions[partition] = &PartitionMetrics{0,0,0,0,0,0, make(map[string]bool),0}
                         }
                         states := strings.Split(line,",")[1]
                         allocated,_ := strconv.ParseFloat(strings.Split(states,"/")[0],64)
@@ -118,9 +119,6 @@ func ParsePartitionsMetrics() map[string]*PartitionMetrics {
 			continue
 		}
 
-		// Reset countedForPending for this job
-		countedForPending := false 
-		
 		// Find the last comma to correctly split partition list and user
 		lastCommaIdx := strings.LastIndex(line, ",")
 		if lastCommaIdx == -1 {
@@ -132,27 +130,43 @@ func ParsePartitionsMetrics() map[string]*PartitionMetrics {
 
 		partitionNames := strings.Split(partitionList, ",")
 
-		for _, partition := range partitionNames {
-			overlappedPartition := partition
-			//Extract "overlap" partition, e.g., standard-afton-largemem -> standard
-			idx := strings.Index(partition, "-")
-			if idx != -1 {
-				overlappedPartition = partition[:idx]
+		// 3a) Exact per-partition counts
+		for _, raw := range partitionNames {
+			part := strings.TrimSpace(raw)
+			if part == "" {
+				continue
 			}
-						
-			if !countedForPending {
-				if _, exists := partitions[overlappedPartition]; exists {
-					partitions[overlappedPartition].pending += 1
-					countedForPending = true
-				}
-			}
-
-			if _, exists := partitions[partition]; exists {
-				partitions[partition].waitingUsers[user] = true		
-			}
-		}		
+        		
+			if _, exists := partitions[part]; !exists {
+            		// Optionally initialize if it didn't show up in sinfo:
+            			partitions[part] = &PartitionMetrics{0,0,0,0,0,0, make(map[string]bool),0}
+        		}
+        		partitions[part].pending += 1
+        		partitions[part].waitingUsers[user] = true
+    		}
+		
+		// 3b) Overlapped (prefix) count: increment ONCE per job
+    		countedForOverlap := false
+    		for _, raw := range partitionNames {
+        		part := strings.TrimSpace(raw)
+        		if part == "" {
+            			continue
+        		}
+        		// Extract prefix before first '-'
+        		overlapped := part
+        		if idx := strings.Index(part, "-"); idx != -1 {
+            			overlapped = part[:idx]
+        		}
+        		if _, exists := partitions[overlapped]; !exists {
+            			// Initialize if missing (optional, for completeness)
+            			partitions[overlapped] = &PartitionMetrics{0,0,0,0,0,0, make(map[string]bool),0}
+        		}
+        		if !countedForOverlap {
+            			partitions[overlapped].pendingOverlap += 1
+            			countedForOverlap = true
+	        	}
+    		}
 	}
-
 
 
 	//for _, partitionLine := range list {
@@ -193,7 +207,8 @@ type PartitionsCollector struct {
         idle *prometheus.Desc
         other *prometheus.Desc
         pending *prometheus.Desc
-        total *prometheus.Desc
+        pendingOverl *prometheus.Desc
+	total *prometheus.Desc
 	waitingUsers *prometheus.Desc
 	usersRunning *prometheus.Desc
 }
@@ -204,7 +219,8 @@ func NewPartitionsCollector() *PartitionsCollector {
                 allocated: prometheus.NewDesc("slurm_partition_cpus_allocated", "Allocated CPUs for partition", labels,nil),
 		idle: prometheus.NewDesc("slurm_partition_cpus_idle", "Idle CPUs for partition", labels,nil),
 		other: prometheus.NewDesc("slurm_partition_cpus_other", "Other CPUs for partition", labels,nil),
-		pending: prometheus.NewDesc("slurm_partition_jobs_pending", "Pending jobs for partition", labels,nil),
+		pending: prometheus.NewDesc("slurm_partition_jobs_pending", "Pending jobs for partition (exact)", labels,nil),
+		pendingOverl: prometheus.NewDesc("slurm_partition_jobs_pending_overlap", "Pending jobs for overlapped prefix", labels, nil),
 		total: prometheus.NewDesc("slurm_partition_cpus_total", "Total CPUs for partition", labels,nil),
 		waitingUsers: prometheus.NewDesc("slurm_partition_users_waiting", "Number of unique users waiting for jobs in partition", labels,nil),
         	usersRunning: prometheus.NewDesc("slurm_partition_users_running", "Number of unique users running jobs in a partition", labels,nil),
@@ -216,6 +232,7 @@ func (pc *PartitionsCollector) Describe(ch chan<- *prometheus.Desc) {
         ch <- pc.idle
         ch <- pc.other
         ch <- pc.pending
+	ch <- pc.pendingOverl
         ch <- pc.total
 	ch <- pc.waitingUsers
 	ch <- pc.usersRunning
@@ -235,7 +252,10 @@ func (pc *PartitionsCollector) Collect(ch chan<- prometheus.Metric) {
                 }
                 if pm[p].pending > 0 {
                         ch <- prometheus.MustNewConstMetric(pc.pending, prometheus.GaugeValue, pm[p].pending, p)
-                }
+		}
+		if pm[p].pendingOverlap > 0 {
+    			ch <- prometheus.MustNewConstMetric(pc.pendingOverl, prometheus.GaugeValue, pm[p].pendingOverlap, p)
+		}
                 if pm[p].total > 0 {
                         ch <- prometheus.MustNewConstMetric(pc.total, prometheus.GaugeValue, pm[p].total, p)
                 }
