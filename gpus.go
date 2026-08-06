@@ -44,13 +44,24 @@ func ParseAllocatedGPUs() float64 {
 		for _, line := range strings.Split(output, "\n") {
 			if len(line) > 0 {
 				line = strings.Trim(line, "\"")
-				descriptor := strings.TrimPrefix(line, "gres/gpu:")
-				job_gpus, _ := strconv.ParseFloat(descriptor, 64)
-				num_gpus += job_gpus
+				for _, field := range strings.Split(line, ",") {
+            				// Match gres/gpu=N or gres/gpu:<type>=N
+            				if strings.HasPrefix(field, "gres/gpu=") || strings.HasPrefix(field, "gres/gpu:") {
+                				// Find the '=' — everything after it is the count
+                				eqIdx := strings.LastIndex(field, "=")
+                				if eqIdx == -1 {
+                    					continue
+                				}
+                				countStr := field[eqIdx+1:]
+                
+                				if count, err := strconv.ParseFloat(countStr, 64); err == nil {
+                    					num_gpus += count
+                				}
+					}
+				}
 			}
 		}
 	}
-
 	return num_gpus
 }
 
@@ -62,12 +73,42 @@ func ParseTotalGPUs() float64 {
 	if len(output) > 0 {
 		for _, line := range strings.Split(output, "\n") {
 			if len(line) > 0 {
-				line = strings.Trim(line, "\"")
-				descriptor := strings.Fields(line)[1]
-				descriptor = strings.TrimPrefix(descriptor, "gpu:")
-				descriptor = strings.Split(descriptor, "(")[0]
-				node_gpus, _ :=  strconv.ParseFloat(descriptor, 64)
-				num_gpus += node_gpus
+				fields := strings.Fields(line)
+        			if len(fields) < 2 {
+            				continue
+        			}
+        
+        			gresField := fields[1]
+        
+        			// Skip nodes with no GRES: "(null)"
+        			if !strings.HasPrefix(gresField, "gpu:") {
+            				continue
+        			}
+        
+        			// GRES format is one of:
+        			//   gpu:N(S:cores)              - untyped
+        			//   gpu:<type>:N(S:cores)       - typed (e.g., gpu:a100:8(S:...))
+        			// A node line may also have multiple GRES separated by comma, e.g. "gpu:a100:4,gpu:a40:4"
+        
+        			for _, gres := range strings.Split(gresField, ",") {
+            				if !strings.HasPrefix(gres, "gpu:") {
+                				continue
+            				}
+            
+            				// Strip trailing "(...)" if present
+            				if idx := strings.Index(gres, "("); idx != -1 {
+                				gres = gres[:idx]
+            				}
+            
+            				// Now gres is either "gpu:N" or "gpu:<type>:N"
+            				// The count is always the LAST colon-separated component
+            				parts := strings.Split(gres, ":")
+            				countStr := parts[len(parts)-1]
+            
+            				if count, err := strconv.ParseFloat(countStr, 64); err == nil {
+                				num_gpus += count
+            				}
+        			}
 			}
 		}
 	}
